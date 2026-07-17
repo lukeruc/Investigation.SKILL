@@ -100,13 +100,6 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-## 当前能力边界
-
-- **Phase 1（已完成）**：案件管理（session_create / open / get）、实体 CRUD、边创建与查询、全图快照，共 11 个工具。
-- **Phase 3（进行中）**：消歧合并（identity / merge / unmerge）、边更新（edge_update / edge_get）、图路径（graph_path / graph_neighbors）、报告摘要（report_summary）已在 `doc/phase3-execution-plan.md` 中规划，部分已实现。
-
-Workflow 已更新为完全串行：每轮搜索结束后进行 analysis，下一轮搜索方向由 `analysis-agent` 的 `next_round_hints` 决定。
-
 ## 使用
 
 在任意目录打开 Claude Code，输入调查意图即可：
