@@ -17,6 +17,7 @@ description: "通用情报调查引擎。输入一个人/公司/地址/事件，
 - 子 Agent 不访问图数据库；analysis-agent 通过输出入库指令间接写库
 - 信息解读、消歧判断、矛盾检测、方向决策全部由 analysis-agent 完成
 - 搜索与分析串行执行，不要跳过分析直接开始下一轮搜索
+- **子 Agent 一律通过"读取定义 + `general-purpose` 分派"创建**：`agents/` 目录下的定义文件不是注册的 agent 类型，用 `Agent(subagent_type="web-search-agent")` 会失败。正确做法是先 `Read` 定义文件，再以 `subagent_type="general-purpose"` 分派，把定义全文放在 prompt 开头
 - 分派子 Agent 时不得传入 `isolation` 参数——调查工作区不一定是 git 仓库，`isolation: "worktree"` 要求 git init 会直接报错
 
 ## 文件索引
@@ -27,9 +28,9 @@ description: "通用情报调查引擎。输入一个人/公司/地址/事件，
 |---|---|
 | `references/mcp-commands.md` | 每次调用 MCP 工具时参考，含全部工具签名和用法 |
 | `references/workflow.md` | 执行调查流程时参考，含阶段 0/1-N/交付的完整步骤 |
-| `agents/web-search-agent.md` | 子 Agent 定义，分派搜索任务时使用 |
-| `agents/analysis-agent.md` | 子 Agent 定义，分派分析任务时使用 |
-| `agents/report-agent.md` | 子 Agent 定义，交付阶段生成全景报告时使用 |
+| `agents/web-search-agent.md` | 分派搜索任务前 Read，把定义全文放入 general-purpose 子 Agent 的 prompt |
+| `agents/analysis-agent.md` | 分派分析任务前 Read，用法同上 |
+| `agents/report-agent.md` | 交付阶段分派报告任务前 Read，用法同上 |
 
 ## 快速启动
 
@@ -38,13 +39,13 @@ description: "通用情报调查引擎。输入一个人/公司/地址/事件，
 1. 读 `references/workflow.md`，按阶段 0 收集种子信息
 2. 读 `references/mcp-commands.md`，调用 MCP 工具创建会话和种子节点
 3. 进入调查循环（workflow 阶段 1）。每轮必须先完成搜索与分析，再启动下一轮：
-   - Round 1：基于种子信息和调查目标编译搜索任务，分派 `web-search-agent`（指定结果写入 `<案件目录>/search-results/`）
+   - Round 1：基于种子信息和调查目标编译搜索任务。Read `agents/web-search-agent.md`，以 `general-purpose` 分派子 Agent（prompt = 定义全文 + 任务，指定结果写入 `<案件目录>/search-results/`）
    - 后续轮：基于上一轮 `analysis-agent` 的 `next_round_hints` 编译搜索任务
-   - 每轮搜索完成后分派 `analysis-agent`（传入搜索结果文件路径），然后机械执行其 `integration_instructions`
+   - 每轮搜索完成后 Read `agents/analysis-agent.md`，以 `general-purpose` 分派分析任务，然后机械执行其 `integration_instructions`
 4. 根据 `next_round_hints` 判断是否继续
 5. 用户说"出报告"时，分派 `report-agent` 生成全景报告
 
 ## 外部依赖
 
 - MCP Server: `investigation-graph`（通过 `mcp__investigation-graph__*` 调用）
-- 子 Agent: `web-search-agent`（搜索，结果写入 JSON 文件）、`analysis-agent`（分析 + 生成入库指令 + 搜索调度）、`report-agent`（报告）
+- 子 Agent 定义文件（非注册类型，分派时 Read 后以 `general-purpose` 创建）: `web-search-agent`（搜索，结果写入 JSON 文件）、`analysis-agent`（分析 + 生成入库指令 + 搜索调度）、`report-agent`（报告）

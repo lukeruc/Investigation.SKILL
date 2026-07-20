@@ -74,10 +74,26 @@ snapshot = graph_snapshot()
 
 #### 步骤 3：分派 web-search-agent
 
-使用 `Agent` 工具分派 `web-search-agent`。每个任务的 prompt 中：
+分派 web-search-agent 执行搜索任务。**子 Agent 通过"读取定义 + general-purpose 分派"创建，不使用命名的 subagent_type**：
 
-- 指定使用 `web-search-agent` agent 定义
-- 指定 `output_file_path` 为 `<案件目录>/search-results/round-<N>-<task-id>.json`，要求 agent 将结果 JSON 写入该文件
+1. 用 `Read` 读取 `agents/web-search-agent.md` 的完整内容
+2. 对每个搜索任务，用 `Agent` 工具以 `subagent_type="general-purpose"` 分派，prompt 结构为：
+
+```
+<agents/web-search-agent.md 的完整定义内容>
+
+---
+
+## 本次搜索任务
+
+**任务 ID**: <task-id>
+**目标实体**: <名称>（类型: <类型>）
+**已知信息**: <从 node body 或 hint 提取的关键信息>
+**信息维度**: <要搜索的维度>
+**任务背景**: <为什么查这个，图谱上下文摘要>
+**期望产出**: <结构化 JSON>
+**output_file_path**: <案件目录>/search-results/round-<N>-<task-id>.json
+```
 
 **重要：不要传入 `isolation: "worktree"` 参数。** 子 Agent 在当前工作区进程内执行，不需要 git worktree 隔离。工作区不一定是 git 仓库。
 
@@ -85,14 +101,33 @@ snapshot = graph_snapshot()
 
 #### 步骤 4：分派 analysis-agent
 
-分派 `analysis-agent`，输入包包含：
+同样通过"读取定义 + general-purpose 分派"创建：
 
-1. **调查全局信息**：调查目标 + 种子节点 body
-2. **上一轮分析结论**：`analysis/round-(N-1).json` 全文（首轮写"首轮"）
-3. **当前图谱摘要**：调用 `graph_snapshot()` 和 `edges_from_node`（或紧凑的节点/边列表）整理为：
-   - 现有节点: `[{node_id, name, type, exploration_status}, ...]`
-   - 现有边: `[{edge_id, source_name, target_name, type, verification_status}, ...]`
-4. **本轮搜索结果文件路径**：`<案件目录>/search-results/round-<N>-*.json` 全部列出，analysis-agent 会自行用 Read 读取
+1. 用 `Read` 读取 `agents/analysis-agent.md` 的完整内容
+2. 用 `Agent` 工具以 `subagent_type="general-purpose"` 分派，prompt 结构为：
+
+```
+<agents/analysis-agent.md 的完整定义内容>
+
+---
+
+## 本调查全局信息
+- 调查目标: <goal>
+- 种子节点 body: <完整 Markdown>
+
+## 上一轮分析结论（如无则写"首轮"）
+<analysis/round-(N-1).json 全文>
+
+## 当前图谱摘要
+- 现有节点: [{node_id, name, type, exploration_status}, ...]
+- 现有边: [{edge_id, source_name, target_name, type, verification_status}, ...]
+
+## 本轮搜索结果文件（用 Read 工具逐个读取）
+- <案件目录>/search-results/round-<N>-<task-id-1>.json
+- <案件目录>/search-results/round-<N>-<task-id-2>.json
+```
+
+图谱摘要通过 `graph_snapshot()` + 必要的节点/边查询整理，保持紧凑——目标是让 analysis-agent 知道"图中已有什么"，不需要完整 body。
 
 **必须等待 analysis-agent 返回后才能进入步骤 5。**
 
@@ -152,5 +187,5 @@ snapshot = graph_snapshot()
 ### 步骤
 
 1. **收集材料**：调用 `graph_snapshot()` 获取全图统计，对种子节点和度中心性 top-5 节点调用 `report_summary(node_id)`，再对各轮 analysis/round-*.json 和证据日志.md 打包
-2. **分派报告 Agent**：通过 `Agent` 工具分派 `report-agent`（定义在 `agents/report-agent.md`），将打包材料发送过去
+2. **分派报告 Agent**：用 `Read` 读取 `agents/report-agent.md` 完整定义，以 `subagent_type="general-purpose"` 分派，prompt 为「agent 定义全文 + 打包材料」。不要传入 `isolation` 参数。
 3. **呈现**：在对话中展示报告 Agent 返回的全景报告.md 内容
