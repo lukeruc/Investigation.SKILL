@@ -9,13 +9,13 @@ description: "通用情报调查引擎。输入一个人/公司/地址/事件，
 
 ## 工作方式
 
-调查分为采集和报告两个阶段。采集阶段由多轮循环组成：每轮通过 web-search-agent 搜集信息，入库后由 analysis-agent 分析并产出下一轮搜索方向；搜索与分析串行执行，下一轮完全依赖上一轮的分析结论。报告阶段由 report-agent 对多轮分析结论做跨轮合成，产出全景报告。
+调查分为采集和报告两个阶段。采集阶段由多轮循环组成：每轮 web-search-agent 搜集信息并写入搜索结果 JSON 文件，analysis-agent 读取文件后产出分析结论和入库指令（`integration_instructions`），主 Agent 机械执行入库指令；搜索与分析串行执行，下一轮完全依赖上一轮的分析结论。报告阶段由 report-agent 对多轮分析结论做跨轮合成，产出全景报告。
 
 **关键约束**：
 
-- 主 Agent 不直接调用 WebSearch/WebFetch，所有信息搜集通过子 Agent 完成
-- 子 Agent 不访问图数据库，只负责信息采集
-- MCP Server 只做存储和查询，矛盾检测、消歧、方向判断由主 Agent 完成
+- 主 Agent 只做调度（编译任务、分派子 Agent）和机械执行（按 `integration_instructions` 写库），不直接调用 WebSearch/WebFetch，不做信息解读
+- 子 Agent 不访问图数据库；analysis-agent 通过输出入库指令间接写库
+- 信息解读、消歧判断、矛盾检测、方向决策全部由 analysis-agent 完成
 - 搜索与分析串行执行，不要跳过分析直接开始下一轮搜索
 - 分派子 Agent 时不得传入 `isolation` 参数——调查工作区不一定是 git 仓库，`isolation: "worktree"` 要求 git init 会直接报错
 
@@ -38,12 +38,13 @@ description: "通用情报调查引擎。输入一个人/公司/地址/事件，
 1. 读 `references/workflow.md`，按阶段 0 收集种子信息
 2. 读 `references/mcp-commands.md`，调用 MCP 工具创建会话和种子节点
 3. 进入调查循环（workflow 阶段 1）。每轮必须先完成搜索与分析，再启动下一轮：
-   - Round 1：基于种子信息和调查目标编译搜索任务，分派 `web-search-agent`
+   - Round 1：基于种子信息和调查目标编译搜索任务，分派 `web-search-agent`（指定结果写入 `<案件目录>/search-results/`）
    - 后续轮：基于上一轮 `analysis-agent` 的 `next_round_hints` 编译搜索任务
-4. 结果入库，应用分析结论，判断是否继续
+   - 每轮搜索完成后分派 `analysis-agent`（传入搜索结果文件路径），然后机械执行其 `integration_instructions`
+4. 根据 `next_round_hints` 判断是否继续
 5. 用户说"出报告"时，分派 `report-agent` 生成全景报告
 
 ## 外部依赖
 
 - MCP Server: `investigation-graph`（通过 `mcp__investigation-graph__*` 调用）
-- 子 Agent: `web-search-agent`（搜索）、`analysis-agent`（分析 + 搜索调度）、`report-agent`（报告）
+- 子 Agent: `web-search-agent`（搜索，结果写入 JSON 文件）、`analysis-agent`（分析 + 生成入库指令 + 搜索调度）、`report-agent`（报告）

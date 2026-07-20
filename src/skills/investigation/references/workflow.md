@@ -39,9 +39,11 @@ node_create(
 
 **核心原则**：搜索与分析串行执行。每轮搜索任务来自上一轮 analysis-agent 的 `next_round_hints`（Round 1 除外，Round 1 来自种子信息和调查目标）。
 
+**主 Agent 职责边界**：主 Agent 只做调度（编译任务、分派子 Agent）和机械执行（按 `integration_instructions` 写库）。信息解读、消歧判断、矛盾检测、方向决策全部由 analysis-agent 完成。
+
 ### Round 1 特殊说明
 
-Round 1 没有上一轮分析可参考，搜索方向完全由种子信息和调查目标决定。结构与后续轮完全一致：搜索 → 入库 → 分析。
+Round 1 没有上一轮分析可参考，搜索方向完全由种子信息和调查目标决定。结构与后续轮完全一致：搜索 → 分析 → 执行入库指令。
 
 ### 每轮执行步骤
 
@@ -49,10 +51,9 @@ Round 1 没有上一轮分析可参考，搜索方向完全由种子信息和调
 
 ```
 snapshot = graph_snapshot()
-gaps = node_list_gaps()
 ```
 
-获取全图状态——节点/边数量、类型分布、度中心性排名、缺口清单。
+获取全图状态——节点/边数量、类型分布、度中心性排名。此步骤只为向用户汇报和追踪进展，不为编译搜索任务。
 
 #### 步骤 2：识别并编译搜索任务
 
@@ -65,79 +66,65 @@ gaps = node_list_gaps()
 **Round N（N > 1）**：
 
 - 读取 `analysis/round-(N-1).json` 中的 `next_round_hints`。
-- 每个 hint 必须能直接翻译为一个 `web-search-agent` prompt。
-- 对每个 hint：
-  1. 若 `target_entity.node_id` 为 null，调用 `node_search(name_pattern=..., type=...)` 查找；若仍未命中，按新实体搜索。
-  2. 将 `suggested_dimensions` 和 `notes` 组合成 `web-search-agent` 输入合约。
-  3. 生成完整 prompt。
+- 对每个 hint 直接编译为 `web-search-agent` prompt：
+  1. 将 `suggested_dimensions` 和 `notes` 组合成 `web-search-agent` 输入合约。
+  2. 生成完整 prompt。
 
 任务优先级直接使用 hint 中的 `priority`；主 Agent 不再重新打分。每轮任务数量上限由 analysis-agent 控制（建议最多 5 个）。
 
-#### 步骤 3：分派子 Agent
+#### 步骤 3：分派 web-search-agent
 
-使用 `Agent` 工具分派 `web-search-agent`。在 prompt 中指定使用 `web-search-agent` agent 定义。
+使用 `Agent` 工具分派 `web-search-agent`。每个任务的 prompt 中：
+
+- 指定使用 `web-search-agent` agent 定义
+- 指定 `output_file_path` 为 `<案件目录>/search-results/round-<N>-<task-id>.json`，要求 agent 将结果 JSON 写入该文件
 
 **重要：不要传入 `isolation: "worktree"` 参数。** 子 Agent 在当前工作区进程内执行，不需要 git worktree 隔离。工作区不一定是 git 仓库。
 
 独立任务可并行分派。等待所有子 Agent 返回后进入步骤 4。
 
-#### 步骤 4：结果入库
+#### 步骤 4：分派 analysis-agent
 
-**实体入库**：
-1. 对每个 new_entity 调 `node_search(name_pattern=name, type=type)` 消歧
-2. 发现同名候选 → 创建 `identity_edge_create`（Phase 3 已实现）标记为待验证；不要直接合并
-3. 是新实体 → `node_create(type, name, body, source_chain_entry)`
-4. 将实体状态改为 `exploring`（防止下一轮重复搜索）
+分派 `analysis-agent`，输入包包含：
 
-**关系入库**：
-1. 解析 source_name/target_name → 查 node_search 获取 node_id
-2. 若找不到对应节点，先 node_create 再 edge_create
-3. `edge_create(source_id, target_id, type, direction, body, source_chain_entry)`
-4. MCP Server 自动处理去重
+1. **调查全局信息**：调查目标 + 种子节点 body
+2. **上一轮分析结论**：`analysis/round-(N-1).json` 全文（首轮写"首轮"）
+3. **当前图谱摘要**：调用 `graph_snapshot()` 和 `edges_from_node`（或紧凑的节点/边列表）整理为：
+   - 现有节点: `[{node_id, name, type, exploration_status}, ...]`
+   - 现有边: `[{edge_id, source_name, target_name, type, verification_status}, ...]`
+4. **本轮搜索结果文件路径**：`<案件目录>/search-results/round-<N>-*.json` 全部列出，analysis-agent 会自行用 Read 读取
 
-**矛盾检测**（LLM 执行）：
-1. 读已有边的 body 和所有 source_chain
-2. 与新来源比较——是否存在实质冲突？
-3. 冲突 → 调用 `edge_update(verification_status="contradicted", contradicted_by=[...])`（Phase 3 已实现）
-4. 独立印证 → 调用 `edge_update(verification_status="verified")`
+**必须等待 analysis-agent 返回后才能进入步骤 5。**
 
-#### 步骤 5：分派分析 Agent
+#### 步骤 5：机械执行入库指令
 
-打包本轮变更数据（新增/更新的节点 body、边 body、source_chain），加上种子 body 和上一轮分析结论，发送给 `analysis-agent`。
+读取 `<案件目录>/analysis/round-<N>.json` 中的 `integration_instructions` 数组，按顺序逐条执行。**不修改指令内容，只做引用解析和 MCP 调用。**
 
-Agent 产出两份文件：
-- `analysis/round-<N>.json`（结构化结论）
-- 追加到 `证据日志.md`（信息来源时间线）
+执行规则：
 
-**必须等待 analysis-agent 返回后才能进入下一轮。**
+| action | 执行方式 |
+|---|---|
+| `node_create` | 先 `node_search(name_pattern=name, type=type)` 消歧。命中现有节点 → 改为 `identity_edge_create` + 跳过创建；未命中 → `node_create`。 |
+| `node_update` | 直接 `node_update(node_id, ...)`。若指令用 `{name, type}` 引用，先 `node_search` 解析 node_id。 |
+| `edge_create` | 用 `node_search` 解析 source/target 的 node_id（指令中是 `{name, type}`），找不到时先创建该节点。然后 `edge_create`。 |
+| `edge_update` | 直接 `edge_update(edge_id, ...)`。 |
+| `identity_edge_create` | 解析两端 node_id 后 `identity_edge_create`。 |
 
-#### 步骤 6：应用分析结论
+执行过程中记录每条指令的结果（成功/失败/去重），失败时跳过并记录，不中断后续指令。
 
-读取 `<案件目录>/analysis/round-<N>.json`，将分析结论落实到图中：
-
-- `body_merges` → `node_update(body=...)`
-- `anomaly_signals` → `node_update(anomaly_flags=[...])`
-- `quality_flags` 中标记的矛盾 → 若 target 为 edge，调用 `edge_update`；若 target 为 node，调用 `node_update`
-- `quality_flags` 中建议升级验证状态 → 调用 `edge_update(verification_status="verified")`
-- `seed_profile` → 更新种子节点 body 的判断层段落
-- 对已完成本轮搜索的节点更新 exploration_status：
-  - 还有维度未搜 → `partial`
-  - 全部维度已搜 → `explored`
-  - 重复搜索无结果 → `exhausted`
-
-同时，查看 `证据日志.md` 中本轮标注的"值得下载的文件"：
+同时，查看 `<案件目录>/证据日志.md` 中本轮标注的"值得下载的文件"：
 - 对每个建议下载的文件，用 WebFetch 抓取后 Write 到 `<案件目录>/evidence/`
-- 将文件路径和内容摘要更新到关联节点的 body 末尾
+- 将文件路径和内容摘要追加到关联节点的 body 末尾（`node_update`）
 
-#### 步骤 7：判断是否继续
+#### 步骤 6：判断是否继续
 
-基于本轮分析结论 + `next_round_hints` + 当前图谱状态，判断：
+基于本轮 `analysis/round-<N>.json` 的 `next_round_hints` + 当前图谱状态，判断：
 - `next_round_hints` 非空 + 未达 `depth_limit` → 向用户汇报本轮摘要，继续下一轮
 - 连续 2 轮无明显进展 → 告知用户，建议暂停、调整方向或出报告
 - 达到 `depth_limit` → 汇报进展，询问是否继续或出报告
 
 **进展判定标准**：满足以下任一条件即视为有进展：
-1. 本轮新增节点数 > 0 或新增边数 > 0
+1. 本轮成功执行的 `integration_instructions` 中有 `node_create` 或 `edge_create`
 2. 本轮 `analysis-agent` 的 `key_findings` 非空且至少有一条 rank <= 2
 3. 本轮有节点的 `exploration_status` 从 `partial` / `exploring` 变为 `explored`
 4. 本轮 `quality_flags` 或 `anomaly_signals` 非空（发现新问题也视为进展）
