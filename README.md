@@ -1,6 +1,6 @@
-# 调查图谱（Investigation Graph）
+# 调查引擎
 
-通用情报分析引擎。以 Claude Code 为运行环境，通过多轮网络搜索构建实体关系图，产出全景画像报告。
+以 Claude Code 为运行环境的通用情报分析引擎。输入一个人/公司/地址/事件，通过多轮网络搜索构建实体关系图，产出全景画像报告。
 
 ## 适用场景
 
@@ -12,26 +12,66 @@
 
 核心理念：**不替代分析师判断，而是让分析师从"手工搜索、逐页整理"中解放出来**，把精力集中在判断和决策上。
 
+## 信息处理模型
+
+引擎使用**节点（Node）和边（Edge）**作为信息的基本单位，每个案件的所有数据存储在一个独立的 SQLite 数据库中（`case.db`）。
+
+### 节点（Node）
+
+节点代表一个实体——一个人、一家公司、一个地址、一个事件。每个节点包含：
+
+- `name` / `type`：实体名称和类型（person / organization / address / event 等，自由字符串）
+- `body`：Markdown 格式的完整描述，是模型内部的工作介质——所有已知信息都以结构化 Markdown 存储在这里
+- `exploration_status`：探索状态（unexplored → exploring → partial → explored / exhausted），控制哪些节点还需要进一步搜索
+- `confidence`：置信度（high / medium / low）
+- `anomaly_flags`：异常标记列表
+
+节点是信息的**落脚点**。搜索过程中发现的每个实体最终落在一个节点上，后续分析通过节点关联的边来理解其在整体关系网络中的位置。
+
+### 边（Edge）
+
+边代表节点之间的关系。每条边连接两个节点，描述它们之间的关联：
+
+- `source_id` / `target_id`：连接的两个节点
+- `type`：关系类型（employment / investment / litigation / identity 等，自由字符串）
+- `body`：关于该关系的 Markdown 描述
+- `verification_status`：验证状态（unverified → verified / contradicted），每个关系可能被多个来源印证、也可能被矛盾证据标记
+- `intensity`：关系强度（0.0-1.0）
+
+### 来源链（Source Chain）
+
+节点和边的每次创建都附带来源记录（`source_chain_entry`），包含来源名称、可靠性评级（A/B/C/D/E/X）和信息可信度（1/2/3/4/5/6）。这意味着**每条信息都可追溯**——报告中"A 是 B 的股东"可以追溯到到底是谁说的，以及那有多可信。
+
+### 与知识图谱的区别
+
+这不是传统的 RDF/OWL 知识图谱，也不是图数据库。SQLite + Markdown body 的选择是有意为之：
+
+- **body 是 LLM 的原生工作介质**：结构化 Markdown 可以同时承载"工商登记号"这样的硬数据和"这个人商业布局的核心企业"这样的判断层信息
+- **类型自由**：不需要预定义 schema，调查中会发现什么类型无法预知
+- **每条信息有来源**：不是"数据"而是"从哪得知的信息"，矛盾也是信息的一部分
+
 ## 项目结构
 
 ```
 ├── src/
 │   ├── mcp-server/               ← MCP Server（Python FastMCP）
-│   │   ├── investigation_graph/  ← 核心包：db / models / queries / server / tools
+│   │   ├── investigation_graph/  ← db / models / queries / server / tools
 │   │   ├── tests/                ← pytest 测试
-│   │   ├── server.py             ← 兼容 shim，转发到 investigation_graph.server
+│   │   ├── server.py             ← 兼容 shim
 │   │   └── pyproject.toml
 │   └── skills/
-│       └── investigation/        ← 主 Skill
-│           ├── SKILL.md          ← 主 Agent 控制逻辑
-│           ├── agents/           ← 子 Agent 定义
+│       └── investigation/        ← Skill（Claude Code Agent 编排层）
+│           ├── SKILL.md          ← 入口：工作方式、核心约束、快速启动
+│           ├── agents/           ← 子 Agent 定义（非注册类型，分派时 Read + general-purpose）
+│           │   ├── web-search-agent.md
 │           │   ├── analysis-agent.md
-│           │   └── web-search-agent.md
+│           │   └── report-agent.md
 │           └── references/       ← 工作流与 MCP 命令参考
-│               ├── mcp-commands.md
-│               └── workflow.md
-├── doc/                          ← 设计文档
-└── README.md
+│               ├── workflow.md
+│               └── mcp-commands.md
+├── doc/                          ← 设计文档与讨论记录
+├── requirements.txt
+└── LICENSE
 ```
 
 ## 环境要求
@@ -66,31 +106,20 @@ pip install -e ".[dev]"
 }
 ```
 
-> 如果使用 conda 或其他虚拟环境，将 `command` 替换为对应 Python 解释器的绝对路径。
->
-> 旧配置使用 `-m server` 仍可启动（`server.py` 为兼容 shim），但建议迁移到 `-m investigation_graph`。
+> 使用 conda 或虚拟环境时，将 `command` 替换为对应 Python 解释器的绝对路径。
 
 ### 配置 Skill
 
-将 Skill 目录链接到 Claude Code 的 skills 路径（项目级或全局均可）：
-
-项目级（推荐，放在工作区 `.claude/skills/`）：
+将 Skill 目录链接到工作区的 `.claude/skills/`（项目级）或 `~/.claude/skills/`（全局）：
 
 ```bash
 ln -s /path/to/intelligence-graph/src/skills/investigation \
       <工作区>/.claude/skills/investigation
 ```
 
-全局：
-
-```bash
-ln -s /path/to/intelligence-graph/src/skills/investigation \
-      ~/.claude/skills/investigation
-```
-
 ### 验证安装
 
-重启 Claude Code，确认 `investigation-graph` MCP 服务器已连接，然后输入"调查 XXX"测试 Skill 是否触发。
+重启 Claude Code，确认 `investigation-graph` MCP 服务器已连接，输入"调查 XXX"测试 Skill 是否触发。
 
 ## 开发与测试
 
@@ -112,4 +141,4 @@ pytest -q
 调查 A 公司，了解股东结构和潜在关联交易
 ```
 
-系统自动创建案件目录（`{timestamp}-调查张三/`），内含 `case.db`，多轮搜索后输出全景报告。
+系统自动创建案件目录（`{timestamp}-调查张三/`），经过多轮搜索与分析循环后输出全景画像报告。
